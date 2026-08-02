@@ -203,7 +203,7 @@ def afficher_agenda_complet_universel(equipe_id=None, paroisse_id=None, diocese_
                 import urllib.parse
                 
                 # 1. METTEZ ICI VOTRE VRAIE ADRESSE IP (pas localhost)
-                base_url = "https://battalion-speculate-immovable.ngrok-free.dev" 
+                base_url = "https://gestion-rosaire-hw6wk9ckkfkqogcbm9ock6.streamlit.app/" 
                 magic_link = f"{base_url}/?e={item[10]}"
                 
                 message = f"Frères et sœurs, confirmez votre présence pour {item[2]} du {i_date.strftime('%d/%m/%Y')}.\n\nCliquez ici pour répondre :\n{magic_link}"
