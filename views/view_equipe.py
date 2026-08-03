@@ -17,7 +17,12 @@ def show_equipe():
     eid = st.session_state['equipe_id']
     equipe_info = c.execute("SELECT nom_equipe, responsable, bureau FROM equipes WHERE id=?", (eid,)).fetchone()
     nom_equipe = equipe_info[0] if equipe_info else "Mon équipe"
-    pid = c.execute("SELECT paroisse_id FROM equipes WHERE id=?", (eid,)).fetchone()[0]
+    # GILET PARE-BALLES
+    pid_result = c.execute("SELECT paroisse_id FROM equipes WHERE id=?", (eid,)).fetchone()
+    if not pid_result:
+        st.error("Équipe introuvable temporairement. Veuillez actualiser la page (F5).")
+        return
+    pid = pid_result[0]
     max_membres = get_max_membres(eid)
 
     menu = st.sidebar.radio("Navigation", ["👥 Mon équipe", "👤 Mes membres", "📅 Abonnements", "📌 Suivi", "💬 WhatsApp", "📦 Archives"])
