@@ -543,11 +543,9 @@ def afficher_etat_presences_globales(equipe_id):
         df_ligne_equipe[col] = df_ligne_equipe[col].apply(lambda x: f"{x:.1f}%")
         
     df_final = pd.concat([df_affichage, df_ligne_equipe], ignore_index=True)
-    df_final.index = df_final.index + 1
     
-    idx = df_final.index.tolist()
-    idx[-1] = ""
-    df_final.index = idx
+    # DÉMINAGE : On force tout l'index à être du texte pour ne pas faire planter PyArrow
+    df_final.index = [str(i+1) for i in range(len(df_final)-1)] + [""]
     
     st.dataframe(df_final, use_container_width=True)
     
@@ -646,11 +644,9 @@ def afficher_etat_presences_paroisse(paroisse_id):
         df_ligne_paroisse[col] = df_ligne_paroisse[col].apply(lambda x: f"{x:.1f}%")
         
     df_final = pd.concat([df_affichage, df_ligne_paroisse], ignore_index=True)
-    df_final.index = df_final.index + 1
     
-    idx = df_final.index.tolist()
-    idx[-1] = ""
-    df_final.index = idx
+    # DÉMINAGE : On force tout l'index à être du texte pour ne pas faire planter PyArrow
+    df_final.index = [str(i+1) for i in range(len(df_final)-1)] + [""]
     
     st.dataframe(df_final, use_container_width=True)
     
