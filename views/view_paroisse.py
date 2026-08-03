@@ -37,6 +37,10 @@ def get_max_membres(equipe_id):
 def show_paroisse():
     pid = st.session_state['paroisse_id']
     p_info = c.execute("SELECT nom, commune, ville, responsable, bureau FROM paroisses WHERE id=?", (pid,)).fetchone()
+    # GILET PARE-BALLES : Si Turso est lent, on affiche une erreur au lieu de planter
+    if not p_info:
+        st.error("Paroisse introuvable temporairement. Veuillez actualiser la page (F5).")
+        return
     nom_p = p_info[0]
     
     menu = st.sidebar.radio("Navigation", ["🏘️ Ma paroisse", "👥 Mes équipes", "👤 Membres", "📊 Statistiques", "📅 Abonnements", "📌 Suivi", "💬 WhatsApp", "📥 Export Excel", "📦 Archives"])
