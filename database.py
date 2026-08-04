@@ -3,16 +3,52 @@ import os
 import time
 import hashlib
 
+# --- LE CAMOUFLAGE TURSO (Compatible Python 3.14) ---
+class TursoCamouflage:
+    """Fait croire au reste de l'application qu'il utilise sqlite3, 
+    mais parle en réalité au client officiel libsql-client."""
+    def __init__(self, url, auth_token):
+        import libsql_client
+        self.client = libsql_client.Client(url=url, auth_token=auth_token)
+        
+    def cursor(self):
+        # La connexion se fait passer pour son propre curseur
+        return self 
+        
+    def execute(self, query, params=None):
+        if params:
+            self._result = self.client.execute(query, params)
+        else:
+            self._result = self.client.execute(query)
+        return self
+        
+    def fetchone(self):
+        return self._result.fetchone()
+        
+    def fetchall(self):
+        return self._result.fetchall()
+        
+    @property
+    def lastrowid(self):
+        return self._result.last_rowid
+        
+    def commit(self):
+        pass # libsql-client valide automatiquement les requêtes HTTP
+        
+    def close(self):
+        self.client.close()
+# ------------------------------------------------
+
 # --- Connexion DB ---
 def create_connection():
     try:
-        from libsql_experimental import connect as turso_connect
         import streamlit as st
         url = st.secrets.get("TURSO_URL")
         token = st.secrets.get("TURSO_AUTH_TOKEN")
         if url and token:
             url_https = url.replace("libsql://", "https://")
-            return turso_connect(url_https, auth_token=token), True
+            # On retourne notre objet camouflé !
+            return TursoCamouflage(url_https, token), True
     except Exception:
         pass
     return sqlite3.connect('gestion_religieuse.db', check_same_thread=False), False
