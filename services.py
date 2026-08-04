@@ -8,7 +8,8 @@ import requests
 import pandas as pd
 from datetime import date
 from PIL import Image
-from database import c, commit_and_sync
+# CORRECTION : Importation de 'conn' nécessaire pour les exports Excel propres
+from database import c, conn, commit_and_sync
 
 USE_CLOUDINARY = False
 try:
@@ -17,17 +18,25 @@ try:
     import cloudinary.uploader
     cloudinary.config(cloud_name=st.secrets.get("CLOUDINARY_CLOUD_NAME"), api_key=st.secrets.get("CLOUDINARY_API_KEY"), api_secret=st.secrets.get("CLOUDINARY_API_SECRET"), secure=True)
     if st.secrets.get("CLOUDINARY_CLOUD_NAME"): USE_CLOUDINARY = True
-except: pass
+except Exception:
+    pass
 
+# ATTENTION SÉCURITÉ : Le SHA256 pur est obsolète pour les mots de passe. 
+# En attendant de voir ton fichier d'authentification, on garde cette fonction,
+# mais il faudra la remplacer par un vrai hachage (ex: bcrypt ou argon2).
 def hash_password(p): return hashlib.sha256(p.encode()).hexdigest()
+
 def generer_mot_de_passe(l=8): return ''.join(random.choices(string.ascii_letters + string.digits, k=l))
+
 def safe_date(v):
     if isinstance(v, date): return v
     if isinstance(v, str):
         try: return date.fromisoformat(v)
         except: return None
     return None
+
 def periode_affichage(a): return f"Sept {a} – Sept {a+1}"
+
 def afficher_situation(s): return {"Déplacé": "a déménagé", "Radié": "indisponible", "Défunt": "est décédé(e)", "Transféré": "a été transféré(e)"}.get(s, s)
 
 def sans_accents(t):
@@ -38,21 +47,26 @@ def sans_accents(t):
 def generer_matricule_unique():
     while True:
         suffixe = ''.join(random.choices(string.ascii_uppercase + string.digits, k=5))
-        mat = f"GBA-{suffixe}" # MODIFICATION : Préfixe GBA
+        mat = f"GBA-{suffixe}"
         if c.execute("SELECT COUNT(*) FROM membres WHERE matloc=?", (mat,)).fetchone()[0] == 0: 
             return mat
 
 def sauvegarder_photo(fichier, matricule):
     if fichier:
-        if USE_CLOUDINARY:
-            res = cloudinary.uploader.upload(fichier, public_id=f"rosaire_membres/{matricule}", overwrite=True, transformation=[{"width": 300, "height": 300, "crop": "fill"}])
-            return res['secure_url']
-        else:
-            os.makedirs("photos", exist_ok=True)
-            chemin = f"photos/{matricule}.jpg"
-            img = Image.open(fichier).resize((300, 300))
-            img.save(chemin, "JPEG", quality=60)
-            return chemin
+        # CORRECTION : Sécurité pour éviter un crash si l'utilisateur upload un fichier non-image (PDF, txt...)
+        try:
+            img = Image.open(fichier)
+            if USE_CLOUDINARY:
+                res = cloudinary.uploader.upload(fichier, public_id=f"rosaire_membres/{matricule}", overwrite=True, transformation=[{"width": 300, "height": 300, "crop": "fill"}])
+                return res['secure_url']
+            else:
+                os.makedirs("photos", exist_ok=True)
+                chemin = f"photos/{matricule}.jpg"
+                img = img.resize((300, 300))
+                img.save(chemin, "JPEG", quality=60)
+                return chemin
+        except Exception:
+            return None
     return None
 
 def supprimer_photo(path):
@@ -63,12 +77,21 @@ def supprimer_photo(path):
             parts = path.split('/upload/')[-1]
             if parts.startswith('v'): parts = '/'.join(parts.split('/')[1:])
             cloudinary.uploader.destroy(os.path.splitext(parts)[0])
-        except: pass
-    elif not path.startswith("http") and os.path.exists(path): os.remove(path)
+        except Exception:
+            pass
+    elif not path.startswith("http") and os.path.exists(path): 
+        os.remove(path)
 
 def archiver_membre(membre_id, situation, annee_debut, annee_fin, commentaire, auteur_id, auteur_nom, auteur_role, paroisse_id=None, equipe_id=None):
-    if not equipe_id: equipe_id = c.execute("SELECT equipe_id FROM membres WHERE id=?", (membre_id,)).fetchone()[0]
-    if not paroisse_id: paroisse_id = c.execute("SELECT paroisse_id FROM equipes WHERE id=?", (equipe_id,)).fetchone()[0]
+    # CORRECTION : Gestion sécurisée des valeurs NULL pour éviter un crash (TypeError)
+    if not equipe_id:
+        res = c.execute("SELECT equipe_id FROM membres WHERE id=?", (membre_id,)).fetchone()
+        equipe_id = res[0] if res and res[0] else None
+        
+    if not paroisse_id and equipe_id:
+        res = c.execute("SELECT paroisse_id FROM equipes WHERE id=?", (equipe_id,)).fetchone()
+        paroisse_id = res[0] if res and res[0] else None
+
     c.execute("UPDATE membres SET statut='archive' WHERE id=?", (membre_id,))
     c.execute('''INSERT INTO archives (membre_id, situation, date_debut, date_fin, commentaire, auteur_id, auteur_nom, auteur_role, paroisse_id, equipe_id)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
@@ -84,47 +107,55 @@ def enregistrer_abonnement(membre_id, annee_debut, montant=0, type_abonnement='a
                   (membre_id, annee_debut, date.today().isoformat(), montant, type_abonnement, 'paye'))
     commit_and_sync()
 
-def verifier_abonnement(m, a): return c.execute("SELECT id FROM abonnements WHERE membre_id=? AND annee_debut=? AND statut='paye'", (m, a)).fetchone() is not None
+def verifier_abonnement(m, a): 
+    return c.execute("SELECT id FROM abonnements WHERE membre_id=? AND annee_debut=? AND statut='paye'", (m, a)).fetchone() is not None
 
 def envoyer_notification_telegram(message):
     try:
         import streamlit as st
         token, chat_id = st.secrets.get("TELEGRAM_BOT_TOKEN"), st.secrets.get("TELEGRAM_CHAT_ID")
-        if token and chat_id: requests.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": message, "parse_mode": "HTML"})
-    except: pass
+        if token and chat_id: 
+            requests.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": message, "parse_mode": "HTML"})
+    except Exception:
+        pass
 
 def lien_whatsapp(num, msg):
     if not num: return None
-    num = ''.join(c for c in num if c.isdigit() or c == '+')
+    num = ''.join(ch for ch in num if ch.isdigit() or ch == '+')
     if not num.startswith('+') and len(num) == 10: num = '225' + num
+    # CORRECTION : Remplacer les antislashs littéraux par de vrais sauts de ligne pour WhatsApp
+    msg = msg.replace('\\n', '\n')
     return f"https://wa.me/{num}?text={urllib.parse.quote(msg)}"
-
-def widget_type_abonnement(prefix, m_id, annee):
-    type_abo = st.radio("Type", ["📝 Abonnement", "🔄 Réabonnement"], key=f"type_{prefix}_{m_id}_{annee}", horizontal=True)
-    montant = st.number_input("Montant (FCFA)", min_value=0, value=5000, step=500, key=f"mont_{prefix}_{m_id}_{annee}")
-    return ("abonnement" if "Abonnement" in type_abo else "reabonnement"), montant
 
 def exporter_excel_diocese():
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        # Modification des noms de colonnes pour l'export
-        for sheet_name, query in [
+        queries = [
             ("Paroisses", "SELECT id, nom, commune, ville, responsable, bureau FROM paroisses"),
             ("Equipes", "SELECT e.id, e.nom_equipe, e.responsable, e.bureau, p.nom as paroisse FROM equipes e JOIN paroisses p ON e.paroisse_id = p.id"),
             ("Membres actifs", "SELECT m.matloc as MatLoc, m.matricule as Matricule, m.nom, m.prenom, m.date_naissance, m.whatsapp, m.date_adhesion, p.nom as paroisse, e.nom_equipe as equipe FROM membres m JOIN paroisses p ON m.paroisse_id = p.id JOIN equipes e ON m.equipe_id = e.id WHERE m.statut = 'actif' ORDER BY p.nom, e.nom_equipe"),
             ("Abonnements", "SELECT a.id, m.matricule, m.nom, m.prenom, a.annee_debut, a.date_paiement, a.montant, a.type_abonnement FROM abonnements a JOIN membres m ON a.membre_id = m.id ORDER BY a.annee_debut DESC"),
             ("Archives", "SELECT m.matloc as MatLoc, m.nom, m.prenom, a.situation, a.date_debut, a.date_fin, a.commentaire, p.nom as paroisse, e.nom_equipe as equipe FROM archives a JOIN membres m ON a.membre_id = m.id LEFT JOIN equipes e ON a.equipe_id = e.id LEFT JOIN paroisses p ON e.paroisse_id = p.id ORDER BY a.date_fin DESC")
-        ]:
-            df = pd.DataFrame(c.execute(query).fetchall())
-            if not df.empty: df.to_excel(writer, sheet_name=sheet_name, index=False)
+        ]
+        
+        for sheet_name, query in queries:
+            # CORRECTION MAJEURE : Utilisation de pd.read_sql_query au lieu de fetchall()
+            # Cela permet de récupérer automatiquement les noms de colonnes (alias AS) dans l'Excel !
+            try:
+                df = pd.read_sql_query(query, conn)
+                if not df.empty: df.to_excel(writer, sheet_name=sheet_name, index=False)
+            except Exception:
+                pass # Silencieux si une table n'existe pas encore
+                
     output.seek(0)
     return output
 
 def get_periode_pastorale():
-    """Retourne l'année de début, la date de début (1er Sept) et la date de fin (31 Mai)"""
+    """Retourne l'année de début, la date de début (1er Sept) et la date de fin (31 Août)"""
     today = date.today()
     annee = today.year if today.month >= 9 else today.year - 1
-    return annee, date(annee, 9, 1), date(annee + 1, 5, 31)
+    # CORRECTION CRITIQUE : L'année pastorale se termine le 31 AOÛT, pas le 31 MAI !
+    return annee, date(annee, 9, 1), date(annee + 1, 8, 31)
 
 def est_cloture(entite_type, entite_id, annee_debut):
     """Vérifie si une période est archivée"""
