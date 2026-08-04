@@ -27,40 +27,34 @@ def ajouter_evenement_agenda(equipe_id=None, paroisse_id=None, diocese_id=None, 
             lieu_ag = st.text_input("📍 Lieu", key=f"l_ag_{prefix}")
             desc_ag = st.text_area("📝 Description", key=f"desc_ag_{prefix}")
             
-            # --- NOUVEAU : Sélection des équipes invitées ---
+            # --- SÉLECTION DES ÉQUIPES INVITÉES ---
             equipes_invitees_ids = []
             
+            # CORRECTION : Initialisation par défaut pour éviter le bug de variable non définie
+            faire_suivre_check = False 
+            
             if paroisse_id and not equipe_id and not diocese_id:
-                # NIVEAU PAROISSE : Le responsable choisit les équipes
                 st.markdown("**👥 Sélectionnez les équipes concernées :**")
                 equipes_paroisse = c.execute("SELECT id, nom_equipe FROM equipes WHERE paroisse_id=?", (paroisse_id,)).fetchall()
                 if equipes_paroisse:
-                    # 1. On ajoute l'option "Toutes les équipes" en haut de la liste
                     options_equipes = ["🤝 Toutes les équipes"] + [e[1] for e in equipes_paroisse]
                     eq_dict = {"🤝 Toutes les équipes": "ALL", **{e[1]: e[0] for e in equipes_paroisse}}
                     
-                    # 2. Auto-sélection si "Prière commune" est choisie
                     cle_selection = f"sel_eq_par_{prefix}"
                     if type_ag == "Prière commune":
-                        # On force la sélection de "Toutes" dans la mémoire de Streamlit
                         if st.session_state.get(cle_selection) != ["🤝 Toutes les équipes"]:
                             st.session_state[cle_selection] = ["🤝 Toutes les équipes"]
                     
                     equipes_selectionnees = st.multiselect("Équipes", options_equipes, key=cle_selection)
                     
-                    # 3. Traitement de la sélection
-                    equipes_invitees_ids = []
                     if "🤝 Toutes les équipes" in equipes_selectionnees:
-                        # Si "Toutes" est coché, on prend tous les IDs des équipes de la paroisse
                         equipes_invitees_ids = [e[0] for e in equipes_paroisse]
                     else:
-                        # Sinon on prend uniquement celles sélectionnées manuellement
                         equipes_invitees_ids = [eq_dict[nom] for nom in equipes_selectionnees]
                 else:
                     st.warning("Aucune équipe créée dans cette paroisse.")
                     
             elif equipe_id and not paroisse_id and not diocese_id:
-                # NIVEAU ÉQUIPE : Prière conjointe avec une autre équipe
                 eq_info = c.execute("SELECT nom_equipe, paroisse_id FROM equipes WHERE id=?", (equipe_id,)).fetchone()
                 if eq_info:
                     autres_equipes = c.execute("SELECT id, nom_equipe FROM equipes WHERE paroisse_id=? AND id != ?", (eq_info[1], equipe_id)).fetchall()
@@ -70,10 +64,8 @@ def ajouter_evenement_agenda(equipe_id=None, paroisse_id=None, diocese_id=None, 
                         eq_conjointe = st.multiselect("Autre équipe", list(eq_dict_autres.keys()), key=f"sel_eq_conj_{prefix}")
                         equipes_invitees_ids = [eq_dict_autres[nom] for nom in eq_conjointe]
                     
-                    # NOUVEAU : Choix manuel de faire suivre au Diocèse
                     faire_suivre_check = st.checkbox("📤 Demander à la Paroisse de faire suivre au Diocèse", value=False, key=f"faire_suivre_{prefix}")
             
-            # Le bouton d'enregistrement
             if st.form_submit_button("📅 Enregistrer", use_container_width=True):
                 # 1. Création de l'événement principal
                 c.execute('''INSERT INTO evenements (equipe_id, paroisse_id, diocese_id, date_evenement, type_evenement, lieu, auteur_nom) VALUES (?,?,?,?,?,?,?)''',
@@ -81,17 +73,14 @@ def ajouter_evenement_agenda(equipe_id=None, paroisse_id=None, diocese_id=None, 
                 new_event_id = c.lastrowid
                 
                 # 2. Liaison dans la table de jointure
-                # Si c'est une équipe qui crée l'événement, on l'ajoute elle-même
                 if equipe_id:
                     c.execute("INSERT INTO evenement_equipes (evenement_id, equipe_id) VALUES (?, ?)", (new_event_id, equipe_id))
                 
-                # On ajoute les équipes invitées
                 for eid_inv in equipes_invitees_ids:
                     c.execute("INSERT INTO evenement_equipes (evenement_id, equipe_id) VALUES (?, ?)", (new_event_id, eid_inv))
                 
                 commit_and_sync()
                 
-                # Gestion du flag faire_suivre
                 faire_suivre = 0
                 if equipe_id and not paroisse_id:
                     faire_suivre = 1 if faire_suivre_check else 0
@@ -99,9 +88,14 @@ def ajouter_evenement_agenda(equipe_id=None, paroisse_id=None, diocese_id=None, 
                           (equipe_id, paroisse_id, diocese_id, date_ag.isoformat(), type_ag, lieu_ag, desc_ag, auteur_nom, faire_suivre, new_event_id))
                 commit_and_sync()
                 
+                # CORRECTION : Sécurisation du nom de la source pour éviter un crash si la BDD est inconsistante
                 source = "Diocèse"
-                if equipe_id: source = c.execute("SELECT nom_equipe FROM equipes WHERE id=?", (equipe_id,)).fetchone()[0] or "Équipe"
-                elif paroisse_id: source = f"Paroisse {c.execute('SELECT nom FROM paroisses WHERE id=?', (paroisse_id,)).fetchone()[0]}"
+                if equipe_id:
+                    eq_res = c.execute("SELECT nom_equipe FROM equipes WHERE id=?", (equipe_id,)).fetchone()
+                    source = eq_res[0] if eq_res and eq_res[0] else "Équipe"
+                elif paroisse_id:
+                    par_res = c.execute('SELECT nom FROM paroisses WHERE id=?', (paroisse_id,)).fetchone()
+                    source = f"Paroisse {par_res[0]}" if par_res and par_res[0] else "Paroisse"
                     
                 nb_invites = f" ({len(equipes_invitees_ids)} équipe(s) invitée(s))" if equipes_invitees_ids else ""
                 envoyer_notification_telegram(f"📅 <b>Nouvel évènement !</b>\n🏢 {source}{nb_invites}\n⛪ {type_ag}\n🗓 {date_ag.strftime('%d/%m/%Y')}\n📍 {lieu_ag}\n👤 {auteur_nom}")
@@ -116,8 +110,6 @@ def afficher_agenda_complet_universel(equipe_id=None, paroisse_id=None, diocese_
     if equipe_id:
         conditions.extend([
             "equipe_id = ?", 
-            # On exclut le flag 2 (Accusé vert) des annonces générales de la paroisse, 
-            # car seul l'équipe ciblée (via equipe_id = ?) doit le voir.
             "(paroisse_id = ? AND equipe_id IS NULL AND (a_faire_suivre IS NULL OR a_faire_suivre != 2))", 
             "(diocese_id = 1 AND paroisse_id IS NULL AND equipe_id IS NULL)"
         ])
@@ -127,7 +119,6 @@ def afficher_agenda_complet_universel(equipe_id=None, paroisse_id=None, diocese_
         conditions.extend(["(paroisse_id = ? AND equipe_id IS NULL)", "equipe_id IN (SELECT id FROM equipes WHERE paroisse_id = ?)", "(diocese_id = 1 AND paroisse_id IS NULL AND equipe_id IS NULL)"])
         params.extend([paroisse_id, paroisse_id])
     elif diocese_id:
-        # LE DIOCESE VOIT SES PROPRES ANNONCES + CELLES DES PAROISSES. IL NE VOIT PAS LES EQUIPES.
         conditions.extend([
             "(diocese_id = ? AND paroisse_id IS NULL AND equipe_id IS NULL)", 
             "paroisse_id IN (SELECT id FROM paroisses WHERE diocese_id = ?)"
@@ -144,108 +135,69 @@ def afficher_agenda_complet_universel(equipe_id=None, paroisse_id=None, diocese_
         i_date = safe_date(item[1])
         if not i_date: continue
         
-        # --- Détermination dynamique de la source ---
-        source_icon = "🏛️"
-        source_nom = "Diocèse"
-        if item[6]: # equipe_id
+        source_icon, source_nom = "🏛️", "Diocèse"
+        if item[6]:
             eq_info = c.execute("SELECT nom_equipe FROM equipes WHERE id=?", (item[6],)).fetchone()
             if eq_info: source_nom, source_icon = f"{eq_info[0]}", "👥"
-        elif item[7]: # paroisse_id
+        elif item[7]:
             par_info = c.execute("SELECT nom FROM paroisses WHERE id=?", (item[7],)).fetchone()
             if par_info: source_nom, source_icon = f"Paroisse {par_info[0]}", "🏘️"
 
-        # --- Gestion du délai et de l'icône ---
         delta = (i_date - date.today()).days
         delai = "🔴 Aujourd'hui !" if delta == 0 else "🟠 Demain" if delta == 1 else f"🟡 Dans {delta} jours" if delta <= 7 else f"🟢 Dans {delta} jours"
         icone = {"Prière mensuelle": "🧎", "Prière commune": "🙏", "Prière spéciale": "✨", "Pèlerinage": "🚶‍♂️", "Réunion": "🤝"}.get(item[2], "📅")
         
-        # --- Titre de l'expander avec Drapeaux visuels ---
         titre = f"{icone} {i_date.strftime('%d/%m/%Y')} - {item[2]} - {source_icon} {source_nom} ({delai})"
-        
-        if item[9] == 1:
-            titre = f"🚨 {titre}"  # Drapeau rouge
-        elif item[9] == 2:
-            titre = f"📬 {titre}"  # Drapeau vert
+        if item[9] == 1: titre = f"🚨 {titre}"
+        elif item[9] == 2: titre = f"📬 {titre}"
             
-        # --- Contenu de l'expander ---
         with st.expander(titre):
-            
-            # OBSERVATION 3 : Fond coloré avec marges négatives pour forcer l'affichage
             if item[9] == 1:
-                st.markdown('''
-                    <div style="background-color: #ffebee; margin: -10px -20px 20px -20px; padding: 15px 20px; border-left: 5px solid #d32f2f; border-radius: 0 8px 8px 0;">
-                        <span style="color: #b71c1c; font-weight: bold; font-size: 1.1rem;">🚩 Demande de transmission au Diocèse</span><br>
-                        <span style="color: #c62828;">L\'équipe émettrice souhaite que cette information soit validée et transmise.</span>
-                    </div>
-                ''', unsafe_allow_html=True)
-                
+                st.markdown('''<div style="background-color: #ffebee; margin: -10px -20px 20px -20px; padding: 15px 20px; border-left: 5px solid #d32f2f; border-radius: 0 8px 8px 0;"><span style="color: #b71c1c; font-weight: bold; font-size: 1.1rem;">🚩 Demande de transmission au Diocèse</span><br><span style="color: #c62828;">L\'équipe émettrice souhaite que cette information soit validée et transmise.</span></div>''', unsafe_allow_html=True)
             elif item[9] == 2:
-                st.markdown('''
-                    <div style="background-color: #e8f5e9; margin: -10px -20px 20px -20px; padding: 15px 20px; border-left: 5px solid #2e7d32; border-radius: 0 8px 8px 0;">
-                        <span style="color: #1b5e20; font-weight: bold; font-size: 1.1rem;">📬 Information validée et transmise</span><br>
-                        <span style="color: #2e7d32;">Cette annonce a été jugée pertinente et remontée par le niveau paroissial.</span>
-                    </div>
-                ''', unsafe_allow_html=True)
+                st.markdown('''<div style="background-color: #e8f5e9; margin: -10px -20px 20px -20px; padding: 15px 20px; border-left: 5px solid #2e7d32; border-radius: 0 8px 8px 0;"><span style="color: #1b5e20; font-weight: bold; font-size: 1.1rem;">📬 Information validée et transmise</span><br><span style="color: #2e7d32;">Cette annonce a été jugée pertinente et remontée par le niveau paroissial.</span></div>''', unsafe_allow_html=True)
 
             st.write(f"**🏢 Source :** {source_icon} {source_nom}")
             st.write(f"**👤 Ajouté par :** {item[5]}")
             if item[3]: st.write(f"**📍 Lieu :** {item[3]}")
             if item[4]: st.write(f"**📝 Détails :** {item[4]}")
             
-            # OBSERVATION 4 : Bouton supprimer disponible partout pour nettoyer son flux
             if st.button("🗑️ Supprimer de mon agenda", key=f"del_ag_{item[0]}"):
                 c.execute("DELETE FROM agenda WHERE id=?", (item[0],))
                 commit_and_sync()
                 st.rerun()
 
-            # --- BOUTON MAGIC LINK DANS L'AGENDA ---
             if item[10]: 
                 import urllib.parse
-                
-                # 1. METTEZ ICI VOTRE VRAIE ADRESSE IP (pas localhost)
                 base_url = "https://gestion-rosaire-hw6wk9ckkfkqogcbm9ock6.streamlit.app/" 
                 magic_link = f"{base_url}/?e={item[10]}"
-                
                 message = f"Frères et sœurs, confirmez votre présence pour {item[2]} du {i_date.strftime('%d/%m/%Y')}.\n\nCliquez ici pour répondre :\n{magic_link}"
-                
-                # 2. LE SECRET : on ajoute safe=':/?=' pour ne pas casser le lien !
                 wa_link = f"https://wa.me/?text={urllib.parse.quote(message, safe=':/?=')}"
-                
                 st.markdown("---")
                 st.markdown(f'<a href="{wa_link}" target="_blank" class="whatsapp-link">📱 Envoyer le lien de réponse sur WhatsApp</a>', unsafe_allow_html=True)
-            # -----------------------------------------
 
-            # --- LOGIQUE DE TRANSMISSION (UNIQUEMENT POUR LA PAROISSE) ---
             if st.session_state.get('role') == 'paroisse':
-                
-                # CAS 1 : C'est une équipe qui demande un transfert (Flag = 1)
                 if item[6] and not item[7] and item[9] == 1:
-                    eq_nom = c.execute("SELECT nom_equipe FROM equipes WHERE id=?", (item[6],)).fetchone()[0]
+                    eq_nom_res = c.execute("SELECT nom_equipe FROM equipes WHERE id=?", (item[6],)).fetchone()
+                    eq_nom = eq_nom_res[0] if eq_nom_res else "Équipe inconnue"
                     
                     c_val, c_ign = st.columns(2)
                     with c_val:
                         if st.button("⬆️ Valider et faire suivre", key=f"val_fwd_{item[0]}", type="primary"):
-                            
-                            # 1. Notification pour le Diocèse. 
-                            # OBSERVATION 2 : On ajoute paroisse_id pour que la source affiche "Paroisse X" et non "Diocèse"
                             desc_dio = f"📢 **Transmis par la Paroisse**\nOrigine : {eq_nom}\n\n{item[4] or ''}"
                             c.execute('''INSERT INTO agenda (diocese_id, paroisse_id, date_event, type_event, lieu, description, auteur_nom, a_faire_suivre) VALUES (1, ?, ?, ?, ?, ?, ?, 2)''',
                                       (st.session_state.get('paroisse_id'), item[1], item[2], item[3], desc_dio, f"{st.session_state.get('username')} (Transmis)"))
                             
-                            # 2. Accusé de réception pour l'équipe (Flag = 2)
                             desc_accuse = f"✅ **Accusé de réception**\nVotre demande a été validée et transmise au Diocèse par la Paroisse."
                             c.execute('''INSERT INTO agenda (equipe_id, date_event, type_event, lieu, description, auteur_nom, a_faire_suivre) VALUES (?, ?, ?, ?, ?, ?, 2)''',
                                       (item[6], item[1], item[2], item[3], desc_accuse, f"{st.session_state.get('username')} (Accusé)"))
                             
-                            # 3. Enlever le drapeau rouge de l'annonce originale
                             c.execute("DELETE FROM agenda WHERE id=?", (item[0],))
-                            
                             commit_and_sync()
                             st.success("Validé ! L'équipe est notifiée et le Diocèse a reçu l'information.")
                             st.rerun()
                             
                     with c_ign:
-                        # OBSERVATION 1 : Remplacement du <br> par un saut de ligne invisible propre
                         st.write("") 
                         if st.button("❌ Ignorer la demande", key=f"ign_fwd_{item[0]}"):
                             c.execute("DELETE FROM agenda WHERE id=?", (item[0],))
@@ -253,7 +205,6 @@ def afficher_agenda_complet_universel(equipe_id=None, paroisse_id=None, diocese_
                             st.info("Demande ignorée.")
                             st.rerun()
                             
-                # CAS 2 : C'est une annonce du Diocèse -> Faire descendre à UNE équipe
                 elif item[8] and not item[6]:
                     st.markdown("---")
                     equipes_paroisse = c.execute("SELECT id, nom_equipe FROM equipes WHERE paroisse_id=?", (st.session_state.get('paroisse_id'),)).fetchall()
@@ -263,7 +214,7 @@ def afficher_agenda_complet_universel(equipe_id=None, paroisse_id=None, diocese_
                         with c_sel:
                             choix_eq = st.selectbox("Transmettre à l'équipe :", list(eq_dict.keys()), key=f"fwd_sel_eq_{item[0]}")
                         with c_btn:
-                            st.write("") # Espacement propre
+                            st.write("")
                             if st.button("⬇️ Faire suivre", key=f"fwd_eq_{item[0]}"):
                                 new_desc = f"📢 **Transmis par la Paroisse**\nOrigine : Diocèse\n\n{item[4] or ''}"
                                 c.execute('''INSERT INTO agenda (equipe_id, date_event, type_event, lieu, description, auteur_nom, a_faire_suivre) VALUES (?,?,?,?,?,?,0)''',
@@ -273,7 +224,6 @@ def afficher_agenda_complet_universel(equipe_id=None, paroisse_id=None, diocese_
                                 st.rerun()
 
 def afficher_historique_suivi(equipe_id, filtre_type="Tous"):
-    # NOUVEAU : Requête adaptée à la table de liaison evenement_equipes
     query = '''SELECT e.id, e.date_evenement, e.type_evenement, e.lieu,
                SUM(CASE WHEN sp.statut='physique' THEN 1 ELSE 0 END),
                SUM(CASE WHEN sp.statut='spirituel' THEN 1 ELSE 0 END),
@@ -282,7 +232,7 @@ def afficher_historique_suivi(equipe_id, filtre_type="Tous"):
                JOIN evenement_equipes ee ON e.id = ee.evenement_id
                LEFT JOIN suivi_presences sp ON e.id = sp.evenement_id
                WHERE ee.equipe_id = ? AND e.date_evenement <= ? '''
-    params = [equipe_id, date.today().isoformat()] # On ajoute la date du jour
+    params = [equipe_id, date.today().isoformat()]
     if filtre_type != "Tous": 
         query += " AND e.type_evenement = ?"; 
         params.append(filtre_type)
@@ -344,17 +294,7 @@ def enregistrer_presence_equipe(equipe_id):
         return
 
     with st.expander("📝 Enregistrer / Modifier une séance", expanded=False):
-        
-        # ==========================================
-        # 1. SÉLECTION DE L'ÉVÉNEMENT (HORS FORMULAIRE)
-        # ==========================================
-        evenements_lies = c.execute('''
-            SELECT e.id, e.date_evenement, e.type_evenement, e.lieu, e.auteur_nom 
-            FROM evenements e 
-            JOIN evenement_equipes ee ON e.id = ee.evenement_id 
-            WHERE ee.equipe_id = ? 
-            ORDER BY e.date_evenement DESC
-        ''', (equipe_id,)).fetchall()
+        evenements_lies = c.execute('''SELECT e.id, e.date_evenement, e.type_evenement, e.lieu, e.auteur_nom FROM evenements e JOIN evenement_equipes ee ON e.id = ee.evenement_id WHERE ee.equipe_id = ? ORDER BY e.date_evenement DESC''', (equipe_id,)).fetchall()
         
         options_evts = {}
         for ev in evenements_lies:
@@ -383,45 +323,29 @@ def enregistrer_presence_equipe(equipe_id):
             with c2: type_event = st.selectbox("⛪ Type", types_evenements, key="type_suivi_eq")
             with c3: lieu_event = st.text_input("📍 Lieu", key="lieu_suivi_eq")
 
-        # ==========================================
-        # LA MAGIE STREAMLIT : NETTOYAGE DE MÉMOIRE
-        # ==========================================
-        # Si on change d'événement dans le menu déroulant, on vide la mémoire des boutons radios
-        # pour forcer Streamlit à lire les nouvelles données de la base (ex: le Magic Link)
         dernier_event_en_memoire = st.session_state.get("dernier_event_vu")
         if event_id != dernier_event_en_memoire:
-            # On supprime tous les anciens boutons radios de la mémoire
             cles_a_supprimer = [k for k in st.session_state.keys() if k.startswith("radio_membre_")]
             for k in cles_a_supprimer:
                 del st.session_state[k]
-            # On enregistre le nouvel événement
             st.session_state["dernier_event_vu"] = event_id
 
-        # ==========================================
-        # 2. LE FORMULAIRE (LES BOUTONS SONT ICI)
-        # ==========================================
         with st.form("form_suivi_presences"):
             st.markdown(f"**Participation de l'équipe pour le {date_event.strftime('%d/%m/%Y')} ({type_event}) :**")
             st.caption("💡 Cochez 'Présent spirituel' pour ceux qui participent à l'évènement depuis chez eux.")
             
             statuts = {}
             for m in membres_actifs:
-                # On lit la base de données
                 existing = None
                 if event_id:
                     existing = c.execute('''SELECT statut FROM suivi_presences WHERE membre_id=? AND evenement_id=?''', (m[0], event_id)).fetchone()
                 
                 db_statut = existing[0] if existing and existing[0] in ["physique", "spirituel", "a_contacter"] else "a_contacter"
-                
-                # Une clé très simple et stable
                 widget_key = f"radio_membre_{m[0]}"
                 
-                # On ne force la valeur QUE si le bouton n'a pas encore de mémoire (vide)
-                # C'est ce qui permet d'afficher la réponse du Magic Link sans casser les clics !
                 if widget_key not in st.session_state:
                     st.session_state[widget_key] = db_statut
                 
-                # On n'utilise plus "index", Streamlit se règle tout seul grâce aux 2 lignes au-dessus
                 statuts[m[0]] = st.radio(
                     f"{m[1]} {m[2]}", 
                     ["physique", "spirituel", "a_contacter"], 
@@ -436,9 +360,6 @@ def enregistrer_presence_equipe(equipe_id):
             with col_btn2:
                 clear = st.form_submit_button("🗑️ Effacer cette séance", use_container_width=True)
             
-            # ==========================================
-            # 3. SAUVEGARDE
-            # ==========================================
             if submitted:
                 if event_id:
                     if choix_evt == "-- Créer un nouvel évènement --":
@@ -481,8 +402,6 @@ def afficher_etat_presences_globales(equipe_id):
     
     if est_cloture('equipe', equipe_id, choix_annee):
         st.success("✅ Cette année pastorale est clôturée et archivée.")
-    # Le bouton n'apparaît QUE pendant la période de transition (Juin, Juillet, Août)
-    #elif choix_annee == annee_actuelle and date.today().month in [6, 7, 8]:
     elif choix_annee == annee_actuelle and date.today().month in [9, 10]:
         if st.button("🔒 Clôturer et archiver cette année", key="cloturer_eq"):
             cloturer_periode('equipe', equipe_id, choix_annee, st.session_state['username'])
@@ -507,8 +426,6 @@ def afficher_etat_presences_globales(equipe_id):
         return st.info(f"Aucune présence enregistrée pour la période de Sept {choix_annee} à Août {choix_annee+1}.")
         
     df = pd.DataFrame(presences, columns=["Nom", "Prenom", "Type", "Statut"])
-    
-    # NOUVEAU CALCUL PANDAS : Un membre est considéré 'Engagé' s'il est physique OU spirituel
     df['Est_Engage'] = df['Statut'].isin(['physique', 'spirituel']).astype(int)
     
     stats = df.groupby(['Nom', 'Prenom', 'Type'])['Est_Engage'].agg(['sum', 'count']).reset_index()
@@ -517,8 +434,7 @@ def afficher_etat_presences_globales(equipe_id):
     
     pivot = stats.pivot_table(index=['Nom', 'Prenom'], columns='Type', values='Taux', aggfunc='first')
     for t in types_evenements:
-        if t not in pivot.columns: 
-            pivot[t] = 0.0
+        if t not in pivot.columns: pivot[t] = 0.0
     pivot = pivot[types_evenements].fillna(0)
     
     pivot['Taux global'] = df.groupby(['Nom', 'Prenom'])['Est_Engage'].mean() * 100
@@ -530,31 +446,17 @@ def afficher_etat_presences_globales(equipe_id):
     pivot = pivot[colonnes_finales].round(1)
     
     taux_equipe = {'Membres': '📊 Taux d\'engagement équipe'}
-    for t in types_evenements: 
-        taux_equipe[t] = pivot[t].mean().round(1)
+    for t in types_evenements: taux_equipe[t] = pivot[t].mean().round(1)
     taux_equipe['Taux global'] = pivot['Taux global'].mean().round(1)
     
     df_affichage = pivot.copy()
-    for col in types_evenements + ['Taux global']: 
-        df_affichage[col] = df_affichage[col].apply(lambda x: f"{x:.1f}%")
+    for col in types_evenements + ['Taux global']: df_affichage[col] = df_affichage[col].apply(lambda x: f"{x:.1f}%")
         
     df_ligne_equipe = pd.DataFrame([taux_equipe])
-    for col in types_evenements + ['Taux global']: 
-        df_ligne_equipe[col] = df_ligne_equipe[col].apply(lambda x: f"{x:.1f}%")
+    for col in types_evenements + ['Taux global']: df_ligne_equipe[col] = df_ligne_equipe[col].apply(lambda x: f"{x:.1f}%")
         
+    # CORRECTION : Plus besoin du "démimage" lourd, ignore_index=True règle le problème PyArrow tout seul
     df_final = pd.concat([df_affichage, df_ligne_equipe], ignore_index=True)
-    
-    # DÉMINAGE : On force tout l'index à être du texte pour ne pas faire planter PyArrow
-    # On convertit tout l'index en texte d'un coup, puis on efface le dernier proprement
-    df_final.index = df_final.index.astype(str)
-    df_final.iloc[-1, df_final.columns.get_loc('Membres')] = " " # On met un espace dans la colonne au lieu de l'index
-    df_final = df_final[:-1] # On retire purement et simplement la dernière ligne du tableau
-    # On recrée la ligne d'équipe avec le bon taux
-    ligne_equipe = {'Membres': '📊 Taux d\'engagement équipe'}
-    for t in types_evenements: ligne_equipe[t] = f"{pivot[t].mean():.1f}%"
-    ligne_equipe['Taux global'] = f"{pivot['Taux global'].mean():.1f}%"
-    df_final = pd.concat([df_final, pd.DataFrame([ligne_equipe])], ignore_index=True)
-    
     st.dataframe(df_final, use_container_width=True)
     
     # Le reste pour le téléchargement
@@ -566,8 +468,7 @@ def afficher_etat_presences_globales(equipe_id):
     with col_btn1:
         st.markdown("**🏢 Rapport de l'équipe**")
         out_team = io.BytesIO()
-        with pd.ExcelWriter(out_team, engine='openpyxl') as w: 
-            df_excel_complet.to_excel(w, index=False, sheet_name="Bilan Equipe")
+        with pd.ExcelWriter(out_team, engine='openpyxl') as w: df_excel_complet.to_excel(w, index=False, sheet_name="Bilan Equipe")
         out_team.seek(0)
         st.download_button(label="📥 Télécharger le bilan de l'équipe", data=out_team, file_name=f"bilan_equipe_Sept{choix_annee}.xlsx", key="dl_team_report", use_container_width=True)
         
@@ -578,8 +479,7 @@ def afficher_etat_presences_globales(equipe_id):
         if choix_membre != noms_membres[0]:
             df_indiv = pivot[pivot['Membres'] == choix_membre].copy()
             out_indiv = io.BytesIO()
-            with pd.ExcelWriter(out_indiv, engine='openpyxl') as w: 
-                df_indiv.to_excel(w, index=False, sheet_name=f"Bilan {choix_membre.split()[0]}")
+            with pd.ExcelWriter(out_indiv, engine='openpyxl') as w: df_indiv.to_excel(w, index=False, sheet_name=f"Bilan {choix_membre.split()[0]}")
             out_indiv.seek(0)
             st.download_button(label=f"📥 Télécharger le bilan de {choix_membre.split()[0]}", data=out_indiv, file_name=f"bilan_{choix_membre.replace(' ', '_')}_Sept{choix_annee}.xlsx", key="dl_indiv_report", use_container_width=True)
 
@@ -596,8 +496,6 @@ def afficher_etat_presences_paroisse(paroisse_id):
     
     if est_cloture('paroisse', paroisse_id, choix_annee):
         st.success("✅ Cette année pastorale est clôturée et archivée pour la paroisse.")
-    # Le bouton n'apparaît QUE pendant la période de transition (Juin, Juillet, Août)
-    #elif choix_annee == annee_actuelle and date.today().month in [6, 7, 8]:
     elif choix_annee == annee_actuelle and date.today().month in [9, 10]:
         if st.button("🔒 Clôturer et archiver cette année (Paroisse)", key="cloturer_par"):
             cloturer_periode('paroisse', paroisse_id, choix_annee, st.session_state['username'])
@@ -606,11 +504,13 @@ def afficher_etat_presences_paroisse(paroisse_id):
     
     types_evenements = ["Prière mensuelle", "Prière commune", "Prière spéciale", "Pèlerinage", "Réunion", "Autre"]
     
+    # CORRECTION CRITIQUE : On lie evenement_equipes via l'équipe du membre pour éviter de multiplier les lignes
     presences = c.execute('''
         SELECT COALESCE(eq.nom_equipe, 'Événement Paroisse') as Equipe, e.type_evenement, sp.statut 
         FROM suivi_presences sp 
+        JOIN membres m ON sp.membre_id = m.id
         JOIN evenements e ON sp.evenement_id = e.id 
-        LEFT JOIN evenement_equipes ee ON e.id = ee.evenement_id
+        LEFT JOIN evenement_equipes ee ON e.id = ee.evenement_id AND ee.equipe_id = m.equipe_id
         LEFT JOIN equipes eq ON ee.equipe_id = eq.id
         WHERE (e.paroisse_id = ? OR eq.paroisse_id = ?) AND e.date_evenement >= ? AND e.date_evenement <= ?
     ''', (paroisse_id, paroisse_id, debut_periode.isoformat(), fin_periode.isoformat())).fetchall()
@@ -627,8 +527,7 @@ def afficher_etat_presences_paroisse(paroisse_id):
     
     pivot = stats.pivot_table(index='Equipe', columns='Type', values='Taux', aggfunc='first')
     for t in types_evenements:
-        if t not in pivot.columns: 
-            pivot[t] = 0.0
+        if t not in pivot.columns: pivot[t] = 0.0
     pivot = pivot[types_evenements].fillna(0)
     
     pivot['Taux global'] = df.groupby('Equipe')['Est_Engage'].mean().mul(100).round(1)
@@ -638,32 +537,17 @@ def afficher_etat_presences_paroisse(paroisse_id):
     pivot = pivot[colonnes_finales].round(1)
     
     taux_paroisse = {'Equipe': '📊 Taux d\'engagement Paroisse'}
-    for t in types_evenements: 
-        taux_paroisse[t] = pivot[t].mean().round(1)
+    for t in types_evenements: taux_paroisse[t] = pivot[t].mean().round(1)
     taux_paroisse['Taux global'] = pivot['Taux global'].mean().round(1)
     
     df_affichage = pivot.copy()
-    for col in types_evenements + ['Taux global']: 
-        df_affichage[col] = df_affichage[col].apply(lambda x: f"{x:.1f}%")
+    for col in types_evenements + ['Taux global']: df_affichage[col] = df_affichage[col].apply(lambda x: f"{x:.1f}%")
         
-    # CORRECTION ICI : df_ligne_equipe devient df_ligne_paroisse
     df_ligne_paroisse = pd.DataFrame([taux_paroisse])
-    for col in types_evenements + ['Taux global']: 
-        df_ligne_paroisse[col] = df_ligne_paroisse[col].apply(lambda x: f"{x:.1f}%")
+    for col in types_evenements + ['Taux global']: df_ligne_paroisse[col] = df_ligne_paroisse[col].apply(lambda x: f"{x:.1f}%")
         
+    # CORRECTION CRITIQUE : Plus de "démimage" nécessaire, et c'est bien 'Equipe' désormais
     df_final = pd.concat([df_affichage, df_ligne_paroisse], ignore_index=True)
-    
-    # DÉMINAGE : On force tout l'index à être du texte pour ne pas faire planter PyArrow
-    # On convertit tout l'index en texte d'un coup, puis on efface le dernier proprement
-    df_final.index = df_final.index.astype(str)
-    df_final.iloc[-1, df_final.columns.get_loc('Membres')] = " " # On met un espace dans la colonne au lieu de l'index
-    df_final = df_final[:-1] # On retire purement et simplement la dernière ligne du tableau
-    # On recrée la ligne d'équipe avec le bon taux
-    ligne_equipe = {'Membres': '📊 Taux d\'engagement équipe'}
-    for t in types_evenements: ligne_equipe[t] = f"{pivot[t].mean():.1f}%"
-    ligne_equipe['Taux global'] = f"{pivot['Taux global'].mean():.1f}%"
-    df_final = pd.concat([df_final, pd.DataFrame([ligne_equipe])], ignore_index=True)
-    
     st.dataframe(df_final, use_container_width=True)
     
     out = io.BytesIO()
@@ -673,17 +557,18 @@ def afficher_etat_presences_paroisse(paroisse_id):
     st.download_button("📥 Télécharger le bilan de la paroisse", data=out, file_name=f"bilan_paroisse_Sept{choix_annee}.xlsx", key="dl_par_report", use_container_width=True)
 
 def afficher_historique_paroisse(paroisse_id, filtre_type="Tous"):
-    # Requête adaptée pour voir TOUTES les équipes de la paroisse via la table de liaison
-    query = '''SELECT e.id, e.date_evenement, e.type_evenement, e.lieu, eq.nom_equipe,
-               SUM(CASE WHEN sp.statut='physique' THEN 1 ELSE 0 END),
-               SUM(CASE WHEN sp.statut='spirituel' THEN 1 ELSE 0 END),
-               SUM(CASE WHEN sp.statut='a_contacter' THEN 1 ELSE 0 END)
+    # CORRECTION : Utilisation de COUNT(DISTINCT sp.membre_id) pour éviter de multiplier les présences
+    # si un événement est lié à plusieurs équipes de la même paroisse
+    query = '''SELECT e.id, e.date_evenement, e.type_evenement, e.lieu, GROUP_CONCAT(DISTINCT eq.nom_equipe) as noms_equipes,
+               COUNT(DISTINCT CASE WHEN sp.statut='physique' THEN sp.membre_id END),
+               COUNT(DISTINCT CASE WHEN sp.statut='spirituel' THEN sp.membre_id END),
+               COUNT(DISTINCT CASE WHEN sp.statut='a_contacter' THEN sp.membre_id END)
                FROM evenements e 
                JOIN evenement_equipes ee ON e.id = ee.evenement_id
                JOIN equipes eq ON ee.equipe_id = eq.id
                LEFT JOIN suivi_presences sp ON e.id = sp.evenement_id
                WHERE eq.paroisse_id = ? AND e.date_evenement <= ? '''
-    params = [paroisse_id, date.today().isoformat()] # On ajoute la date du jour
+    params = [paroisse_id, date.today().isoformat()]
     if filtre_type != "Tous":
         query += " AND e.type_evenement = ?"; 
         params.append(filtre_type)
@@ -700,7 +585,6 @@ def afficher_historique_paroisse(paroisse_id, filtre_type="Tous"):
         
         with st.expander(f"{icone} {d_ev.strftime('%d/%m/%Y')} - {ev[2]} ({ev[4]}) | ✅ {nb_p} ⚠️ {nb_e} ❌ {nb_a}"):
             st.markdown(f"**Taux de présence :** :{couleur}[{taux:.0f}%]")
-            # Utilisation des NOUVEAUX statuts philosophiques
             for statut, label in [('physique', '✅ Présents physiques'), ('spirituel', '🟡 Présents spirituels'), ('a_contacter', '⚪ Sans nouvelles')]:
                 rows = c.execute('''SELECT m.nom, m.prenom, eq.nom_equipe FROM membres m 
                                     JOIN suivi_presences sp ON m.id=sp.membre_id 
@@ -718,7 +602,6 @@ def afficher_page_reponse_membre(event_id):
         st.error("Lien invalide.")
         return
 
-    # 1. Récupérer les infos de l'événement
     evt = c.execute("SELECT type_evenement, date_evenement, lieu FROM evenements WHERE id=?", (event_id,)).fetchone()
     if not evt:
         st.error("Cet événement n'existe pas.")
@@ -733,20 +616,21 @@ def afficher_page_reponse_membre(event_id):
     </div>
     """, unsafe_allow_html=True)
 
-    # --- NOUVEAU : ON INITIALISE LA MÉMOIRE ---
-    if 'membre_verifie' not in st.session_state:
+    # CORRECTION BUG : Réinitialisation de la mémoire si l'événement change dans l'URL
+    if st.session_state.get('event_id_verifie') != event_id:
         st.session_state['membre_verifie'] = False
         st.session_state['membre_info'] = None
         st.session_state['membre_a_repondu'] = False
+        st.session_state['event_id_verifie'] = event_id
 
-    # --- ÉTAPE 1 : VÉRIFICATION (Si pas encore fait) ---
-    if not st.session_state['membre_verifie']:
+    # --- ÉTAPE 1 : VÉRIFICATION ---
+    if not st.session_state.get('membre_verifie', False):
         st.markdown("**Entrez votre numéro de membre (MatLoc) :**")
         col1, col2 = st.columns([2, 1])
         with col1:
             matloc_saisi = st.text_input("MatLoc", placeholder="Ex: GBA-A1B2C", label_visibility="collapsed").upper().strip()
         with col2:
-            st.write("") # Espace pour aligner
+            st.write("")
             bouton_verifier = st.button("Vérifier", use_container_width=True)
 
         if bouton_verifier and matloc_saisi:
@@ -760,46 +644,36 @@ def afficher_page_reponse_membre(event_id):
             if not membre:
                 st.error("❌ MatLoc inconnu ou vous ne faites pas partie d'une équipe invitée à cet événement.")
             else:
-                # ON SAUVEGARDE EN MÉMOIRE !
                 st.session_state['membre_verifie'] = True
                 st.session_state['membre_info'] = membre
-                st.rerun() # On recharge pour passer à l'étape 2
+                st.rerun()
 
-    # --- ÉTAPE 2 : LE CHOIX (Si déjà vérifié) ---
+    # --- ÉTAPE 2 : LE CHOIX ---
     else:
         membre = st.session_state['membre_info']
         st.success(f"Bonjour **{membre[1]} {membre[2]}** ! Comment vous joignez-vous à nous ?")
         
-        # Vérifier s'il a déjà répondu
         deja_repondu = c.execute("SELECT statut FROM suivi_presences WHERE membre_id=? AND evenement_id=?", (membre[0], event_id)).fetchone()
         index_defaut = 0
-        if deja_repondu:
-            if deja_repondu[0] == 'spirituel': 
-                index_defaut = 1
+        if deja_repondu and deja_repondu[0] == 'spirituel': 
+            index_defaut = 1
 
-        # Le choix philosophique
         choix = st.radio(
             "Votre engagement :", 
             ["physique", "spirituel"], 
-            format_func=lambda x: {
-                "physique": "🟢 Je serai présent physiquement", 
-                "spirituel": "🟡 Je prierai de chez moi (Spirituel)"
-            }[x],
+            format_func=lambda x: {"physique": "🟢 Je serai présent physiquement", "spirituel": "🟡 Je prierai de chez moi (Spirituel)"}[x],
             index=index_defaut,
             horizontal=False
         )
 
-        # Bouton de confirmation
         if st.button("✅ Confirmer ma réponse", use_container_width=True, type="primary"):
             if deja_repondu:
                 c.execute("UPDATE suivi_presences SET statut=? WHERE membre_id=? AND evenement_id=?", (choix, membre[0], event_id))
             else:
                 c.execute("INSERT INTO suivi_presences (membre_id, evenement_id, statut) VALUES (?, ?, ?)", (membre[0], event_id, choix))
             commit_and_sync()
-            
             st.session_state['membre_a_repondu'] = True
 
-        # --- ÉTAPE 3 : LE MESSAGE FINAL ---
         if st.session_state.get('membre_a_repondu'):
             if choix == "physique":
                 st.balloons()
