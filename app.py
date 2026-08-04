@@ -1,7 +1,6 @@
 import os
-from PIL import Image
 import streamlit as st
-from database import c, commit_and_sync, init_tables
+from database import c, commit_and_sync
 from services import hash_password
 
 # --- Configuration de la page ---
@@ -9,10 +8,14 @@ st.set_page_config(page_title="Gestionnaire des Équipes du Rosaire - Diocèse d
 
 # --- INTERCEPTION DU LIEN MAGIQUE (MEMBRE) ---
 try:
-    # On regarde dans l'URL si on trouve "?e=11"
     params = st.query_params
     if "e" in params:
-        event_id = params["e"] # Récupère la valeur 11
+        event_id = params["e"]
+        
+        # CORRECTION CRITIQUE : Les nouvelles versions de Streamlit renvoient une liste ex: ["11"] au lieu de "11"
+        if isinstance(event_id, list):
+            event_id = event_id[0]
+            
         from components import afficher_page_reponse_membre
         afficher_page_reponse_membre(event_id)
         st.stop() # On bloque l'affichage du reste de la page (donc pas de connexion demandée)
@@ -110,7 +113,7 @@ def afficher_logo():
     if not os.path.exists("images"):
         try:
             os.makedirs("images")
-        except:
+        except Exception:
             pass
     
     logo_path = os.path.join("images", "logo.png")
@@ -126,13 +129,27 @@ def afficher_logo():
 if 'logged_in' not in st.session_state:
     afficher_logo()
     st.sidebar.title("🔐 Connexion")
-    u, p = st.sidebar.text_input("Utilisateur"), st.sidebar.text_input("Mot de passe", type="password")
+    
+    # Ajout de clés explicites pour éviter les conflits de mémoire de Streamlit
+    u = st.sidebar.text_input("Utilisateur", key="login_user")
+    p = st.sidebar.text_input("Mot de passe", type="password", key="login_pass")
+    
     if st.sidebar.button("Se connecter"):
         user = c.execute("SELECT * FROM utilisateurs WHERE username=? AND password=?", (u, hash_password(p))).fetchone()
         if user:
-            st.session_state.update({'logged_in': True, 'user_id': user[0], 'username': user[1], 'role': user[3], 'diocese_id': user[4], 'paroisse_id': user[5], 'equipe_id': user[6]})
-            st.success(f"Bienvenue {u}"); st.rerun()
-        else: st.sidebar.error("Identifiants incorrects")
+            st.session_state.update({
+                'logged_in': True, 
+                'user_id': user[0], 
+                'username': user[1], 
+                'role': user[3], 
+                'diocese_id': user[4], 
+                'paroisse_id': user[5], 
+                'equipe_id': user[6]
+            })
+            st.success(f"Bienvenue {u}")
+            st.rerun()
+        else: 
+            st.sidebar.error("Identifiants incorrects")
     st.stop()
 
 afficher_logo()
