@@ -6,13 +6,12 @@ import io
 from datetime import date
 from database import c, commit_and_sync
 from services import (hash_password, generer_mot_de_passe, safe_date, afficher_situation, 
-                      exporter_excel_diocese, periode_affichage)
+                      exporter_excel_diocese, periode_affichage, get_periode_pastorale) # AJOUT get_periode_pastorale
 from components import (ajouter_evenement_agenda, afficher_agenda_complet_universel, 
                         afficher_whatsapp_tabs, afficher_historique_paroisse, 
-                        afficher_etat_presences_paroisse) # On retire les composants "Équipe"
+                        afficher_etat_presences_paroisse)
 
 def show_diocese():
-    # Récupération des infos diocèse
     d_info = c.execute("SELECT nom, responsable, bureau FROM diocese WHERE id=?", (1,)).fetchone()
     nom_dio = d_info[0] if d_info else "Diocèse"
 
@@ -142,20 +141,26 @@ def show_diocese():
         st.markdown('<h2 style="color:#1A237E;">🔍 Recherche par matricule</h2>', unsafe_allow_html=True)
         matricule = st.text_input("Matricule (MatLoc ou Matricule)")
         if matricule:
+            # CORRECTION MAJEURE : Utilisation de LEFT JOIN pour trouver un membre 
+            # même s'il n'est pas encore assigné à une équipe ou une paroisse !
             m = c.execute('''SELECT m.matloc, m.matricule, m.nom, m.prenom, m.whatsapp, p.nom, e.nom_equipe, m.photo_path
-                             FROM membres m JOIN paroisses p ON m.paroisse_id = p.id JOIN equipes e ON m.equipe_id = e.id
+                             FROM membres m 
+                             LEFT JOIN paroisses p ON m.paroisse_id = p.id 
+                             LEFT JOIN equipes e ON m.equipe_id = e.id
                              WHERE (m.matloc = ? OR m.matricule = ?) AND m.statut = 'actif' ''', (matricule.upper(), matricule.upper())).fetchone()
             if m:
                 st.success("Membre trouvé")
                 col1, col2 = st.columns([2,1])
                 with col1:
                     st.write(f"**{m[2]} {m[3]}** - MatLoc: {m[0]} | Matricule: {m[1]}")
-                    st.write(f"💬 WhatsApp: {m[4]}")
-                    st.markdown(f"🏘️ **Paroisse :** {m[5]}  \n👥 **Équipe :** {m[6]}")
+                    st.write(f"💬 WhatsApp: {m[4] or 'Non renseigné'}")
+                    # Sécurisation des valeurs NULL
+                    st.markdown(f"🏘️ **Paroisse :** {m[5] or 'Non assignée'}  \n👥 **Équipe :** {m[6] or 'Non assignée'}")
                 with col2:
                     if m[7]:
+                        # CORRECTION : except: nu interdit
                         try: st.image(m[7], width=100)
-                        except: pass
+                        except Exception: pass
             else:
                 st.error("Non trouvé ou membre archivé")
 
@@ -172,9 +177,7 @@ def show_diocese():
                         c.execute("UPDATE utilisateurs SET password=? WHERE id=?", (hash_password(nouveau), user[0]))
                         commit_and_sync()
                         st.session_state['new_pwd_par'] = {'user': user[1], 'pwd': nouveau}
-                        #st.rerun()
                     
-                    # Affichage persistant du mot de passe
                     if st.session_state.get('new_pwd_par') and st.session_state['new_pwd_par']['user'] == user[1]:
                         st.markdown(f"<div style='background:#e8f5e9;padding:15px;border-radius:10px;border:1px solid #c8e6c9;'>🔑 Nouveau mot de passe pour <code>{st.session_state['new_pwd_par']['user']}</code> : <code style='color:#d84315;font-size:1.2rem;'>{st.session_state['new_pwd_par']['pwd']}</code></div>", unsafe_allow_html=True)
                         if st.button("OK, j'ai noté le mot de passe", key=f"ok_pwd_par_{p[0]}"):
@@ -194,16 +197,24 @@ def show_diocese():
         for state in ['show_paroisse_abos', 'show_equipe_abos', 'abos_view_type']:
             if state not in st.session_state: st.session_state[state] = None
         
-        annee_debut = st.number_input("Année de début de la période", min_value=2020, max_value=date.today().year, value=date.today().year-1, step=1)
+        # CORRECTION LOGIQUE : L'année par défaut est celle de l'année pastorale en cours
+        annee_pastorale_en_cours = get_periode_pastorale()[0]
+        annee_debut = st.number_input("Année de début de la période", min_value=2020, max_value=annee_pastorale_en_cours, value=annee_pastorale_en_cours, step=1)
         st.write(f"**Période :** {periode_affichage(annee_debut)}")
         
         total_membres = c.execute("SELECT COUNT(*) FROM membres WHERE statut='actif'").fetchone()[0]
         payes = c.execute("SELECT COUNT(*) FROM abonnements WHERE annee_debut=? AND statut='paye'", (annee_debut,)).fetchone()[0]
+        
         c1, c2 = st.columns(2)
         c1.metric("📊 Total membres actifs", total_membres)
-        c2.metric("✅ Abonnements enregistrés", payes, delta=f"{payes/total_membres*100:.0f}%" if total_membres else "0%")
+        # CORRECTION BUG STREAMLIT : st.metric n'accepte PAS les textes dans "delta" dans les versions récentes
+        c2.metric("✅ Abonnements enregistrés", payes)
         
+        # On affiche le pourcentage en dessous pour éviter le crash
+        taux = f"{payes/total_membres*100:.0f}%" if total_membres else "0%"
+        st.caption(f"📊 **Taux de recouvrement global :** {taux}")
         st.markdown("---")
+        
         for p in c.execute("SELECT id, nom FROM paroisses ORDER BY nom").fetchall():
             pid, nom_paroisse = p
             stats = c.execute("""SELECT COUNT(m.id) as total, SUM(CASE WHEN a.annee_debut=? AND a.statut='paye' THEN 1 ELSE 0 END) as payes
@@ -315,7 +326,6 @@ def show_diocese():
                 types_evenements = ["Tous", "Prière mensuelle", "Prière commune", "Prière spéciale", "Pèlerinage", "Réunion", "Autre"]
                 filtre_type = st.selectbox("Filtrer par type d'évènement", types_evenements, key="filtre_hist_dio")
                 
-                # Appel du composant PAROISSE (plus de sélection d'équipe)
                 afficher_historique_paroisse(paroisse_id=pid_select, filtre_type=filtre_type)
             else: 
                 st.info("Aucune paroisse créée.")
@@ -327,14 +337,13 @@ def show_diocese():
                 choix_par2 = st.selectbox("Sélectionnez la paroisse pour le bilan", list(par_dict2.keys()), key="etat_hist_dio_par")
                 pid_select2 = par_dict2[choix_par2]
                 
-                # Appel du composant PAROISSE (Tableau croisé des équipes)
                 afficher_etat_presences_paroisse(paroisse_id=pid_select2)
             else: 
                 st.info("Aucune paroisse créée.")
 
     elif menu == "💬 WhatsApp":
         st.markdown(f'<h2 style="color:#1A237E;">💬 Messages WhatsApp - {nom_dio}</h2>', unsafe_allow_html=True)
-        afficher_whatsapp_tabs(equipe_id=None) # Utilisation du composant harmonisé
+        afficher_whatsapp_tabs(equipe_id=None)
 
     elif menu == "📥 Export Excel":
         st.markdown('<h2 style="color:#1A237E;">📥 Export des données</h2>', unsafe_allow_html=True)
@@ -373,6 +382,13 @@ def show_diocese():
             confirmation = st.text_input("Tapez 'SUPPRIMER' pour confirmer")
             if confirmation == "SUPPRIMER":
                 if os.path.exists("photos"): shutil.rmtree("photos")
+                
+                # CORRECTION : Purge COMPLÈTE incluant les nouvelles tables (événements, présences, agenda...)
+                c.execute("DELETE FROM suivi_presences")
+                c.execute("DELETE FROM evenement_equipes")
+                c.execute("DELETE FROM evenements")
+                c.execute("DELETE FROM agenda")
+                c.execute("DELETE FROM periodes_cloturees")
                 c.execute("DELETE FROM abonnements")
                 c.execute("DELETE FROM archives")
                 c.execute("DELETE FROM membres")
