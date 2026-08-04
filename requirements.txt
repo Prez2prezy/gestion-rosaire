@@ -3,5 +3,5 @@ pandas
 openpyxl
 Pillow
 requests
-libsql_experimental
+libsql-client
 cloudinary
