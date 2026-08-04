@@ -5,8 +5,10 @@ from datetime import date
 from database import c, commit_and_sync
 from services import (sauvegarder_photo, supprimer_photo, archiver_membre, safe_date, 
                       afficher_situation, enregistrer_abonnement, verifier_abonnement, 
-                      periode_affichage, generer_matricule_unique)
-from components import ajouter_evenement_agenda, afficher_agenda_complet_universel, afficher_historique_suivi, afficher_whatsapp_tabs, widget_type_abonnement, enregistrer_presence_equipe, afficher_etat_presences_globales
+                      periode_affichage, generer_matricule_unique, get_periode_pastorale) # AJOUT
+from components import (ajouter_evenement_agenda, afficher_agenda_complet_universel, 
+                        afficher_historique_suivi, afficher_whatsapp_tabs, widget_type_abonnement, 
+                        enregistrer_presence_equipe, afficher_etat_presences_globales)
 
 def get_max_membres(equipe_id):
     eq = c.execute("SELECT e.nom_equipe, p.nom FROM equipes e JOIN paroisses p ON e.paroisse_id = p.id WHERE e.id=?", (equipe_id,)).fetchone()
@@ -17,7 +19,7 @@ def show_equipe():
     eid = st.session_state['equipe_id']
     equipe_info = c.execute("SELECT nom_equipe, responsable, bureau FROM equipes WHERE id=?", (eid,)).fetchone()
     nom_equipe = equipe_info[0] if equipe_info else "Mon équipe"
-    # GILET PARE-BALLES
+    
     pid_result = c.execute("SELECT paroisse_id FROM equipes WHERE id=?", (eid,)).fetchone()
     if not pid_result:
         st.error("Équipe introuvable temporairement. Veuillez actualiser la page (F5).")
@@ -27,8 +29,9 @@ def show_equipe():
 
     menu = st.sidebar.radio("Navigation", ["👥 Mon équipe", "👤 Mes membres", "📅 Abonnements", "📌 Suivi", "💬 WhatsApp", "📦 Archives"])
 
+    # CORRECTION MÉMOIRE : Ajout de 'modif_abo_id' au nettoyage pour éviter les formulaires fantômes
     if st.session_state.get('last_menu') != menu:
-        for key in ['open_form_eq', 'delete_membre_id']:
+        for key in ['open_form_eq', 'delete_membre_id', 'modif_abo_id']:
             if key in st.session_state: del st.session_state[key]
         st.session_state['last_menu'] = menu
 
@@ -70,7 +73,7 @@ def show_equipe():
                         photo = st.file_uploader("Photo", type=['jpg','png','jpeg'])
                         col_date, col_mle = st.columns(2)
                         with col_date: date_adhesion = st.date_input("Date d'adhésion", min_value=date(1950,1,1), max_value=date.today(), value=date.today())
-                        with col_mle: matricule_nat = st.text_input("Matricule") # MODIF ICI
+                        with col_mle: matricule_nat = st.text_input("Matricule")
                         col1, col2 = st.columns(2)
                         with col1:
                             if st.form_submit_button("❌ Annuler"): st.session_state['open_form_eq'] = None; st.rerun()
@@ -79,7 +82,7 @@ def show_equipe():
                                 if c.execute("SELECT id FROM membres WHERE nom=? AND prenom=? AND date_naissance=? AND statut=?", (nom, prenom, naissance.isoformat(), 'actif')).fetchone():
                                     st.error("Membre déjà actif")
                                 else:
-                                    matloc = generer_matricule_unique() # MODIF ICI
+                                    matloc = generer_matricule_unique()
                                     c.execute("""INSERT INTO membres (matloc, nom, prenom, date_naissance, whatsapp, date_adhesion, paroisse_id, equipe_id, statut, numero_meditation, matricule) VALUES (?,?,?,?,?,?,?,?,?,?,?)""", (matloc, nom, prenom, naissance.isoformat(), whatsapp, date_adhesion.isoformat(), pid, eid, 'actif', numero_meditation, matricule_nat))
                                     mid = c.lastrowid
                                     if photo: c.execute("UPDATE membres SET photo_path=? WHERE id=?", (sauvegarder_photo(photo, matloc), mid))
@@ -87,7 +90,6 @@ def show_equipe():
                             else: st.error("Le nom et le prénom sont requis.")
         
         st.markdown("---")
-        # MODIF SELECT ICI : matloc puis matricule
         membres = c.execute("""SELECT id, matloc, nom, prenom, whatsapp, photo_path, date_adhesion, numero_meditation, matricule FROM membres WHERE equipe_id=? AND statut=? ORDER BY nom""", (eid, 'actif')).fetchall()
         
         for m in membres:
@@ -106,7 +108,7 @@ def show_equipe():
                     m_data = c.execute("SELECT nom, prenom, whatsapp, photo_path, numero_meditation, matricule FROM membres WHERE id=?", (id_m,)).fetchone()
                     if m_data:
                         with st.form(f"form_mod_eq_{id_m}"):
-                            st.text_input("MatLoc", value=matloc, disabled=True) # Affiché mais non modifiable
+                            st.text_input("MatLoc", value=matloc, disabled=True)
                             new_nom, new_prenom = st.text_input("Nom", value=m_data[0]), st.text_input("Prénom", value=m_data[1])
                             new_whatsapp, new_num_med = st.text_input("WhatsApp", value=m_data[2]), st.text_input("N° méditation", value=m_data[4] or "", max_chars=2)
                             new_matricule = st.text_input("Matricule", value=m_data[5] or "")
@@ -162,7 +164,11 @@ def show_equipe():
                 with col1:
                     if st.button("✅ Oui, supprimer"):
                         if m_del[2]: supprimer_photo(m_del[2])
-                        c.execute("DELETE FROM membres WHERE id=?", (del_id,)); c.execute("DELETE FROM abonnements WHERE membre_id=?", (del_id,)); commit_and_sync()
+                        c.execute("DELETE FROM membres WHERE id=?", (del_id,))
+                        c.execute("DELETE FROM abonnements WHERE membre_id=?", (del_id,))
+                        # CORRECTION CRITIQUE : On supprime aussi ses présences pour ne pas fausser les statistiques !
+                        c.execute("DELETE FROM suivi_presences WHERE membre_id=?", (del_id,))
+                        commit_and_sync()
                         del st.session_state['delete_membre_id']; st.success("Membre supprimé"); st.rerun()
                 with col2:
                     if st.button("❌ Annuler"): del st.session_state['delete_membre_id']; st.rerun()
@@ -179,8 +185,12 @@ def show_equipe():
 
     elif menu == "📅 Abonnements":
         st.markdown(f'<h2 style="color:#1A237E;">💰 Gestion des abonnements - {nom_equipe}</h2>', unsafe_allow_html=True)
-        annee = st.number_input("Année de début", 2020, date.today().year+1, date.today().year)
+        
+        # CORRECTION LOGIQUE : Année pastorale par défaut
+        annee_pastorale_en_cours = get_periode_pastorale()[0]
+        annee = st.number_input("Année de début", 2020, annee_pastorale_en_cours, annee_pastorale_en_cours)
         st.write(f"**Période :** {periode_affichage(annee)}")
+        
         for m in c.execute("SELECT id, nom, prenom, matricule FROM membres WHERE equipe_id=? AND statut='actif'", (eid,)).fetchall():
             deja = verifier_abonnement(m[0], annee)
             if deja:
@@ -220,30 +230,29 @@ def show_equipe():
         st.markdown("---")
         tab_liste = st.tabs(["📝 Abonnés", "🔄 Réabonnés", "❌ Non enregistrés"])
         with tab_liste[0]:
-            # MODIF REQUETE : On sélectionne matricule en premier
             abonnes = c.execute('''SELECT m.matricule, m.nom, m.prenom, a.date_paiement, a.montant FROM membres m JOIN abonnements a ON m.id=a.membre_id WHERE m.equipe_id=? AND a.annee_debut=? AND a.type_abonnement='abonnement' AND a.statut='paye' ORDER BY m.nom''', (eid, annee)).fetchall()
             if abonnes:
-                # MODIF COLONNES : N°, Matricule, Nom, Prénom...
-                data = [{"N°": i+1, "Matricule": a[0], "Nom": a[1], "Prénom": a[2], "Date paiement": a[3], "Montant": f"{a[4]} FCFA"} for i, a in enumerate(abonnes)]
+                # CORRECTION AFFICHAGE : Suppression du champ "N°" en double dans le dictionnaire
+                data = [{"Matricule": a[0], "Nom": a[1], "Prénom": a[2], "Date paiement": a[3], "Montant": f"{a[4]} FCFA"} for a in abonnes]
                 df = pd.DataFrame(data); df.index = df.index + 1; st.dataframe(df, use_container_width=True)
             else: st.info("Aucun abonné.")
         with tab_liste[1]:
             reabonnes = c.execute('''SELECT m.matricule, m.nom, m.prenom, a.date_paiement, a.montant FROM membres m JOIN abonnements a ON m.id=a.membre_id WHERE m.equipe_id=? AND a.annee_debut=? AND a.type_abonnement='reabonnement' AND a.statut='paye' ORDER BY m.nom''', (eid, annee)).fetchall()
             if reabonnes:
-                data = [{"N°": i+1, "Matricule": r[0], "Nom": r[1], "Prénom": r[2], "Date paiement": r[3], "Montant": f"{r[4]} FCFA"} for i, r in enumerate(reabonnes)]
+                # CORRECTION AFFICHAGE : Suppression du champ "N°" en double
+                data = [{"Matricule": r[0], "Nom": r[1], "Prénom": r[2], "Date paiement": r[3], "Montant": f"{r[4]} FCFA"} for r in reabonnes]
                 df = pd.DataFrame(data); df.index = df.index + 1; st.dataframe(df, use_container_width=True)
             else: st.info("Aucun réabonné.")
         with tab_liste[2]:
             non_inscrits = c.execute('''SELECT m.matricule, m.nom, m.prenom FROM membres m WHERE m.equipe_id=? AND m.statut='actif' AND m.id NOT IN (SELECT a.membre_id FROM abonnements a WHERE a.annee_debut=? AND a.statut='paye') ORDER BY m.nom''', (eid, annee)).fetchall()
             if non_inscrits:
-                data = [{"N°": i+1, "Matricule": n[0], "Nom": n[1], "Prénom": n[2]} for i, n in enumerate(non_inscrits)]
+                # CORRECTION AFFICHAGE : Suppression du champ "N°" en double
+                data = [{"Matricule": n[0], "Nom": n[1], "Prénom": n[2]} for n in non_inscrits]
                 df = pd.DataFrame(data); df.index = df.index + 1; st.dataframe(df, use_container_width=True)
             else: st.success("🎉 Tous les membres sont à jour !")
 
     elif menu == "📌 Suivi":
         st.markdown(f'<h2 style="color:#1A237E;">📌 Suivi et Agenda - {nom_equipe}</h2>', unsafe_allow_html=True)
-        
-        # Les trois onglets demandés
         tab_avenir, tab_passe, tab_etat = st.tabs(["📅 Agenda", "📝 Vie de prière de l'équipe", "📊 Engagement spirituel"])
         
         with tab_avenir:
@@ -290,7 +299,6 @@ def show_equipe():
                         elif situation == "Transféré" and not equipe_destination: st.error("Choisissez une équipe.")
                         elif situation == "Transféré":
                             c.execute("UPDATE membres SET statut='archive' WHERE id=?", (membre_choisi[0],))
-                            # CORRECTION ICI : Retrait d'un "?" en trop et ajout de date() pour annee_debut_arch
                             c.execute('''INSERT INTO archives (membre_id, situation, date_debut, date_fin, commentaire, auteur_id, auteur_nom, auteur_role, paroisse_id, equipe_id) VALUES (?, 'Transféré', ?, ?, ?, ?, ?, ?, ?, ?)''', (membre_choisi[0], date(annee_debut_arch, 9, 1), date(annee_fin_arch, 9, 1), f"Transféré vers {dest_nom}", st.session_state['user_id'], st.session_state['username'], 'equipe', pid, eid))
                             c.execute("UPDATE membres SET equipe_id=?, statut='actif' WHERE id=?", (equipe_destination, membre_choisi[0]))
                             commit_and_sync(); st.success(f"Transféré vers {dest_nom} !"); st.rerun()
@@ -298,8 +306,6 @@ def show_equipe():
                             archiver_membre(membre_choisi[0], situation, annee_debut_arch, annee_fin_arch, commentaire, st.session_state['user_id'], st.session_state['username'], 'equipe', pid, eid)
                             st.success(f"✅ {membre_choisi[1]} {membre_choisi[2]} archivé."); st.rerun()
         
-        # --- CORRECTION PRINCIPALE ICI : Désindenter ce bloc pour le sortir de l'expander ---
-        # --- Ce bloc est bien sorti de l'expander ---
         st.markdown(f'<h3 style="color:#1A237E;">✏️ Gérer les archives de votre équipe</h3>', unsafe_allow_html=True)
         if archives_equipe:
             for arch in archives_equipe:
