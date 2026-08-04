@@ -2,16 +2,14 @@ import re
 import streamlit as st
 import pandas as pd
 import io
-import sqlite3
-
 from datetime import date
 from database import c, commit_and_sync
 from services import (hash_password, generer_mot_de_passe, sauvegarder_photo, supprimer_photo,
                       archiver_membre, safe_date, afficher_situation, sans_accents, 
-                      enregistrer_abonnement, verifier_abonnement, periode_affichage, generer_matricule_unique)
+                      enregistrer_abonnement, verifier_abonnement, periode_affichage, 
+                      generer_matricule_unique, get_periode_pastorale)
 from components import (ajouter_evenement_agenda, afficher_agenda_complet_universel, afficher_historique_suivi, 
-                        afficher_whatsapp_tabs, widget_type_abonnement, afficher_etat_presences_globales,
-                        afficher_etat_presences_paroisse) # <--- AJOUT DE CELUI-CI
+                        afficher_whatsapp_tabs, widget_type_abonnement, afficher_etat_presences_globales)
 
 def generer_identifiant_equipe(nom_paroisse, nom_commune, nom_equipe, paroisse_id):
     nom_propre = nom_paroisse.lower()
@@ -37,7 +35,6 @@ def get_max_membres(equipe_id):
 def show_paroisse():
     pid = st.session_state['paroisse_id']
     p_info = c.execute("SELECT nom, commune, ville, responsable, bureau FROM paroisses WHERE id=?", (pid,)).fetchone()
-    # GILET PARE-BALLES : Si Turso est lent, on affiche une erreur au lieu de planter
     if not p_info:
         st.error("Paroisse introuvable temporairement. Veuillez actualiser la page (F5).")
         return
@@ -85,28 +82,21 @@ def show_paroisse():
             nb_m = c.execute("SELECT COUNT(*) FROM membres WHERE equipe_id=? AND statut='actif'", (eq_id,)).fetchone()[0]
             
             with st.expander(f"📌 {eq_nom} - {eq_resp} ({nb_m}/{get_max_membres(eq_id)} membres)"):
-                
-                # Bouton pour déclencher le mode édition
                 if not st.session_state.get(f'edit_eq_par_{eq_id}'):
                     if st.button("✏️ Modifier l'équipe", key=f"btn_edit_eq_par_{eq_id}"):
                         st.session_state[f'edit_eq_par_{eq_id}'] = True
                         st.rerun()
                 
-                # --- MODE ÉDITION ---
                 if st.session_state.get(f'edit_eq_par_{eq_id}'):
-                    
-                    # 1. LE BOUTON MOT DE PASSE EST EN DEHORS DU FORMULAIRE
                     if st.button("🔑 Réinitialiser le mot de passe de connexion", key=f"reset_pwd_eq_par_{eq_id}"):
                         new_mdp = generer_mot_de_passe()
                         c.execute("UPDATE utilisateurs SET password=? WHERE equipe_id=? AND role='equipe'", (hash_password(new_mdp), eq_id))
                         commit_and_sync()
                         st.session_state[f'new_pwd_eq_par_{eq_id}'] = new_mdp
                     
-                    # 2. L'AFFICHAGE DU MOT DE PASSE EST EN DEHORS DU FORMULAIRE
                     if st.session_state.get(f'new_pwd_eq_par_{eq_id}'):
                         st.markdown(f"<div style='background:#fff3e0;padding:15px;border-radius:10px;border:1px solid #ffe0b2;'>🔑 Nouveau mot de passe de l'équipe : <code style='color:#d84315;font-size:1.2rem;'>{st.session_state[f'new_pwd_eq_par_{eq_id}']}</code></div>", unsafe_allow_html=True)
                         
-                    # 3. LE FORMULAIRE CLASSIQUE (UNIQUEMENT POUR LES INFOS DE L'ÉQUIPE)
                     with st.form(f"form_edit_eq_par_{eq_id}"):
                         new_nom = st.text_input("Nom de l'équipe", value=eq_nom, key=f"edit_nom_{eq_id}")
                         new_resp = st.text_input("Responsable", value=eq_resp, key=f"edit_resp_{eq_id}")
@@ -117,7 +107,6 @@ def show_paroisse():
                             if st.form_submit_button("💾 Enregistrer"):
                                 c.execute("UPDATE equipes SET nom_equipe=?, responsable=?, bureau=? WHERE id=?", (new_nom, new_resp, new_bur, eq_id))
                                 commit_and_sync()
-                                # On nettoie la mémoire du mot de passe à la sauvegarde
                                 if f'new_pwd_eq_par_{eq_id}' in st.session_state: del st.session_state[f'new_pwd_eq_par_{eq_id}']
                                 del st.session_state[f'edit_eq_par_{eq_id}']
                                 st.success("Équipe et accès mis à jour !")
@@ -127,14 +116,11 @@ def show_paroisse():
                                 if f'new_pwd_eq_par_{eq_id}' in st.session_state: del st.session_state[f'new_pwd_eq_par_{eq_id}']
                                 del st.session_state[f'edit_eq_par_{eq_id}']
                                 st.rerun()
-                                
-                # --- MODE AFFICHAGE NORMAL ---
                 else:
                     st.write(f"**Bureau :** {eq_bur}")
                     user_info = c.execute("SELECT username FROM utilisateurs WHERE equipe_id=? AND role='equipe'", (eq_id,)).fetchone()
                     if user_info: st.code(f"🔑 Connexion : {user_info[0]}")
                 
-                # Lister les membres (accessible dans les deux modes)
                 if st.button(f"📋 Voir les membres de {eq_nom}", key=f"btn_membres_eq_{eq_id}"):
                     st.session_state['show_membres_equipe'] = eq_id if st.session_state.get('show_membres_equipe') != eq_id else None
                     st.rerun()
@@ -165,7 +151,6 @@ def show_paroisse():
                     dn = st.date_input("Naissance", min_value=date(1950, 1, 1), max_value=date.today())
                     with c2: w, nm = st.text_input("WhatsApp"), st.text_input("N° méd.", max_chars=2)
                     ph = st.file_uploader("Photo", ['jpg','png'])
-                    
                     da = st.date_input("Date d'adhésion", min_value=date(1950, 1, 1), max_value=date.today(), value=date.today())
 
                     if st.form_submit_button("✅ Ajouter") and n and p:
@@ -212,6 +197,12 @@ def show_paroisse():
                                         c.execute("UPDATE membres SET statut='archive' WHERE id=?", (m[0],))
                                         c.execute('''INSERT INTO archives (membre_id, situation, date_debut, date_fin, commentaire, auteur_id, auteur_nom, auteur_role, paroisse_id, equipe_id) VALUES (?, 'Transféré', ?, ?, ?, ?, ?, ?, ?, ?)''', (m[0], ad, date(af, 10, 1), f"Transféré vers {dest_nom}", st.session_state['user_id'], st.session_state['username'], 'paroisse', pid, eid))
                                         c.execute("UPDATE membres SET equipe_id=?, statut='actif' WHERE id=?", (equipe_destination, m[0]))
+                                        
+                                        # CORRECTION CRITIQUE : Ajout du commit et du rerun pour le transfert
+                                        commit_and_sync()
+                                        del st.session_state[f'form_arch_p_{m[0]}']
+                                        st.success(f"Membre transféré vers {dest_nom} !")
+                                        st.rerun()
                                     else:
                                         archiver_membre(m[0], sit, ad, af, com, st.session_state['user_id'], st.session_state['username'], 'paroisse', pid, eid)
                                         del st.session_state[f'form_arch_p_{m[0]}']; st.success("Archivé !"); st.rerun()
@@ -224,7 +215,10 @@ def show_paroisse():
 
     elif menu == "📅 Abonnements":
         st.markdown(f'<h2 style="color:#1A237E;">💰 État des abonnements - {nom_p}</h2>', unsafe_allow_html=True)
-        annee = st.number_input("Année de début de période", min_value=2020, max_value=date.today().year, value=date.today().year - 1, step=1)
+        
+        # CORRECTION LOGIQUE : Année pastorale par défaut
+        annee_pastorale_en_cours = get_periode_pastorale()[0]
+        annee = st.number_input("Année de début de période", min_value=2020, max_value=annee_pastorale_en_cours, value=annee_pastorale_en_cours, step=1)
         st.write(f"**Période observée :** {periode_affichage(annee)}")
         
         stats_p = c.execute('''SELECT COUNT(m.id), SUM(CASE WHEN a.annee_debut=? AND a.statut='paye' THEN 1 ELSE 0 END) FROM membres m LEFT JOIN abonnements a ON m.id = a.membre_id AND a.annee_debut=? WHERE m.paroisse_id=? AND m.statut='actif' ''', (annee, annee, pid)).fetchone()
@@ -238,7 +232,9 @@ def show_paroisse():
         
         c1, c2 = st.columns(2)
         c1.metric("Total membres (Paroisse)", total_p)
-        c2.metric("Abonnements enregistrés", payes_p, delta=pourcent_str)
+        # CORRECTION BUG STREAMLIT : Retrait du delta texte
+        c2.metric("Abonnements enregistrés", payes_p)
+        st.caption(f"📊 **Taux de recouvrement :** {pourcent_str}")
         
         st.markdown("---")
         
@@ -266,42 +262,33 @@ def show_paroisse():
 
     elif menu == "📌 Suivi":
         st.markdown(f'<h2 style="color:#1A237E;">📌 Suivi et Agenda - {nom_p}</h2>', unsafe_allow_html=True)
-        
-        # On vérifie d'abord s'il y a des équipes dans cette paroisse
         equipes = c.execute("SELECT id, nom_equipe FROM equipes WHERE paroisse_id=?", (pid,)).fetchall()
         
         if not equipes:
             st.warning("Aucune équipe créée dans cette paroisse. Vous ne pouvez pas gérer le suivi.")
         else:
-            # Les trois onglets identiques à l'équipe
             tab_avenir, tab_passe, tab_etat = st.tabs(["📅 Agenda", "📝 Vie de prière des équipes", "📊 Engagement spirituel"])
             
             with tab_avenir:
-                # 1. Formulaire d'ajout pour la paroisse
                 ajouter_evenement_agenda(paroisse_id=pid, auteur_nom=st.session_state['username'])
                 st.markdown("---")
-                # 2. Vue globale (La paroisse voit ses événements + ceux de ses équipes + ceux du diocèse)
                 afficher_agenda_complet_universel(paroisse_id=pid)
 
-            # ONGLET SÉANCES RÉALISÉES (CONSULTATION SEULEMENT)
             with tab_passe:
                 st.markdown("### 📋 Faire le point des équipes")
                 eq_dict = {eq[1]: eq[0] for eq in equipes}
                 choix_eq = st.selectbox("Sélectionnez l'équipe à consulter", list(eq_dict.keys()), key="suivi_paroisse_eq")
                 eid = eq_dict[choix_eq]
                 
-                # Filtre par type d'évènement
                 types_evenements = ["Tous", "Prière mensuelle", "Prière commune", "Prière spéciale", "Pèlerinage", "Réunion", "Autre"]
                 filtre_type = st.selectbox("Filtrer par type d'évènement", types_evenements, key="filtre_hist_par")
                 
-                # Affichage de l'historique (Lecture seule)
                 afficher_historique_suivi(equipe_id=eid, filtre_type=filtre_type)
                 
             with tab_etat:
                 eq_dict2 = {eq[1]: eq[0] for eq in equipes}
                 choix_eq2 = st.selectbox("Sélectionnez l'équipe pour voir le bilan", list(eq_dict2.keys()), key="etat_paroisse_eq")
                 eid2 = eq_dict2[choix_eq2]
-                # On appelle le même composant de tableau croisé !
                 afficher_etat_presences_globales(equipe_id=eid2)
 
     elif menu == "💬 WhatsApp":
