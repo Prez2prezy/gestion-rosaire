@@ -545,7 +545,15 @@ def afficher_etat_presences_globales(equipe_id):
     df_final = pd.concat([df_affichage, df_ligne_equipe], ignore_index=True)
     
     # DÉMINAGE : On force tout l'index à être du texte pour ne pas faire planter PyArrow
-    df_final.index = [str(i+1) for i in range(len(df_final)-1)] + [" "]
+    # On convertit tout l'index en texte d'un coup, puis on efface le dernier proprement
+    df_final.index = df_final.index.astype(str)
+    df_final.iloc[-1, df_final.columns.get_loc('Membres')] = " " # On met un espace dans la colonne au lieu de l'index
+    df_final = df_final[:-1] # On retire purement et simplement la dernière ligne du tableau
+    # On recrée la ligne d'équipe avec le bon taux
+    ligne_equipe = {'Membres': '📊 Taux d\'engagement équipe'}
+    for t in types_evenements: ligne_equipe[t] = f"{pivot[t].mean():.1f}%"
+    ligne_equipe['Taux global'] = f"{pivot['Taux global'].mean():.1f}%"
+    df_final = pd.concat([df_final, pd.DataFrame([ligne_equipe])], ignore_index=True)
     
     st.dataframe(df_final, use_container_width=True)
     
@@ -646,7 +654,15 @@ def afficher_etat_presences_paroisse(paroisse_id):
     df_final = pd.concat([df_affichage, df_ligne_paroisse], ignore_index=True)
     
     # DÉMINAGE : On force tout l'index à être du texte pour ne pas faire planter PyArrow
-    df_final.index = [str(i+1) for i in range(len(df_final)-1)] + [" "]
+    # On convertit tout l'index en texte d'un coup, puis on efface le dernier proprement
+    df_final.index = df_final.index.astype(str)
+    df_final.iloc[-1, df_final.columns.get_loc('Membres')] = " " # On met un espace dans la colonne au lieu de l'index
+    df_final = df_final[:-1] # On retire purement et simplement la dernière ligne du tableau
+    # On recrée la ligne d'équipe avec le bon taux
+    ligne_equipe = {'Membres': '📊 Taux d\'engagement équipe'}
+    for t in types_evenements: ligne_equipe[t] = f"{pivot[t].mean():.1f}%"
+    ligne_equipe['Taux global'] = f"{pivot['Taux global'].mean():.1f}%"
+    df_final = pd.concat([df_final, pd.DataFrame([ligne_equipe])], ignore_index=True)
     
     st.dataframe(df_final, use_container_width=True)
     
